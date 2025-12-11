@@ -2,18 +2,15 @@ import sys
 import time
 import threading
 import requests
-import psutil
-from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 from RealtimeSTT import AudioToTextRecorder
 
 # 설정
 API_ENDPOINT = "http://localhost:5000/api/stt"
-SEND_INTERVAL = 10  # 10초마다 전송
+SEND_INTERVAL = 5  # 5초마다 전송
 TIMEOUT = 5  # 5초 타임아웃
 MAX_RETRIES = 1  # 1회 재시도
 WHISPER_MODEL = "base"
 LANGUAGE = "ko"
-SESSION_VOLUME = 0.8  # Python 오디오 세션 볼륨 목표값 (0~1)
 
 # 전역 변수
 text_buffer = ""
@@ -27,43 +24,6 @@ stats = {
     'total_chars': 0
 }
 stats_lock = threading.Lock()
-
-
-def set_python_session_volume(level: float) -> None:
-    """Python 프로세스 오디오 세션 볼륨을 강제로 조정."""
-    target = max(0.0, min(1.0, level))
-
-    try:
-        sessions = AudioUtilities.GetAllSessions()
-    except Exception as exc:
-        print(f"[!] 오디오 세션 나열 실패: {exc}")
-        return
-
-    adjusted = 0
-    for session in sessions:
-        proc = session.Process
-        if not proc:
-            continue
-
-        try:
-            name = psutil.Process(proc.pid).name().lower()
-        except psutil.Error:
-            continue
-
-        if not name.startswith("python"):
-            continue
-
-        try:
-            simple_volume = session._ctl.QueryInterface(ISimpleAudioVolume)
-            simple_volume.SetMasterVolume(target, None)
-            adjusted += 1
-        except Exception as exc:
-            print(f"[!] 세션 볼륨 조정 실패(pid={proc.pid}): {exc}")
-
-    if adjusted:
-        print(f"[i] Python 세션 볼륨을 {int(target * 100)}%로 설정({adjusted}개 세션)")
-    else:
-        print("[i] 조정할 Python 오디오 세션이 없습니다 (이미 종료 또는 권한 문제)")
 
 
 def send_to_api(text):
@@ -135,6 +95,7 @@ def send_to_api(text):
 
 def timer_thread():
     """10초마다 버퍼 내용을 전송하는 스레드"""
+    global text_buffer
     print(f"[i] 타이머 스레드 시작 (전송 주기: {SEND_INTERVAL}초)")
 
     while True:
@@ -144,7 +105,7 @@ def timer_thread():
             if text_buffer.strip():
                 text_to_send = text_buffer
                 # 버퍼 비우기 (전송 성공 여부와 관계없이)
-                globals()['text_buffer'] = ""
+                text_buffer = ""
 
                 with stats_lock:
                     stats['total_sends'] += 1
@@ -158,12 +119,12 @@ def timer_thread():
 def on_realtime_transcription_update(text):
     """중간 결과 콜백 (실시간 표시)"""
     # 한 줄 갱신
-    sys.stdout.write(f"\r[실시간] {text}")
+    sys.stdout.write(f"\r[실시간] {text}          ")
     sys.stdout.flush()
 
 
-def on_realtime_transcription_stabilized(text):
-    """최종 결과 콜백 (버퍼에 추가)"""
+def process_final_text(text):
+    """최종 결과 처리 (버퍼에 추가)"""
     global text_buffer
 
     if not text or text.strip() == "":
@@ -173,7 +134,7 @@ def on_realtime_transcription_stabilized(text):
         # 문장 구분 (공백으로)
         if text_buffer:
             text_buffer += " "
-        text_buffer += text
+        text_buffer += text.strip()
 
     # 새로운 줄에 확정 문장 출력
     print(f"\n[확정] {text}")
@@ -207,7 +168,6 @@ def main():
     print(f"전송 주기: {SEND_INTERVAL}초")
     print(f"Whisper 모델: {WHISPER_MODEL}")
     print(f"언어: {LANGUAGE}")
-    print(f"세션 볼륨 목표: {int(SESSION_VOLUME * 100)}%")
     print("="*60)
 
     try:
@@ -220,7 +180,6 @@ def main():
             language=LANGUAGE,
             spinner=False,
             on_realtime_transcription_update=on_realtime_transcription_update,
-            on_realtime_transcription_stabilized=on_realtime_transcription_stabilized
         )
 
         print("[✓] RealtimeSTT 초기화 완료!")
@@ -236,14 +195,9 @@ def main():
         print("\n[i] 음성 인식 시작... (Ctrl+C로 종료)")
         print("[i] 마이크에 대고 말씀하세요.\n")
 
-        # 레코더 시작
-        recorder.start()
-        set_python_session_volume(SESSION_VOLUME)
-        threading.Timer(5, set_python_session_volume, args=(SESSION_VOLUME,)).start()
-
-        # 메인 루프
+        # 메인 루프 - recorder.text()에 콜백을 전달하여 최종 인식 결과를 처리
         while True:
-            time.sleep(0.1)
+            recorder.text(process_final_text)
 
     except KeyboardInterrupt:
         print("\n\n[i] 종료 신호 수신...")
