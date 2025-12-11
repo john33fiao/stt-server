@@ -9,7 +9,7 @@ API_ENDPOINT = "http://localhost:5000/api/stt"
 SEND_INTERVAL = 5  # 5초마다 전송
 TIMEOUT = 5  # 5초 타임아웃
 MAX_RETRIES = 1  # 1회 재시도
-WHISPER_MODEL = "base"
+WHISPER_MODEL = "turbo"  # tiny, base, small, medium, large, turbo 중 선택 (turbo 추천: 빠르고 정확)
 LANGUAGE = "ko"
 
 # 전역 변수
