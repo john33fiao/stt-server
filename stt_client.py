@@ -207,6 +207,7 @@ def main():
     print(f"전송 주기: {SEND_INTERVAL}초")
     print(f"Whisper 모델: {WHISPER_MODEL}")
     print(f"언어: {LANGUAGE}")
+    print(f"세션 볼륨 목표: {int(SESSION_VOLUME * 100)}%")
     print("="*60)
 
     try:
@@ -237,6 +238,8 @@ def main():
 
         # 레코더 시작
         recorder.start()
+        set_python_session_volume(SESSION_VOLUME)
+        threading.Timer(5, set_python_session_volume, args=(SESSION_VOLUME,)).start()
 
         # 메인 루프
         while True:
