@@ -184,6 +184,10 @@ def main():
 
         print("[✓] RealtimeSTT 초기화 완료!")
 
+        # 마이크 입력 시작
+        recorder.start()
+        print("[i] 마이크 스트림 시작!")
+
         # 타이머 스레드 시작
         timer = threading.Thread(target=timer_thread, daemon=True)
         timer.start()
