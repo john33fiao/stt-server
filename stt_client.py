@@ -2,7 +2,8 @@ import sys
 import time
 import threading
 import requests
-from datetime import datetime
+import psutil
+from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 from RealtimeSTT import AudioToTextRecorder
 
 # 설정
@@ -12,6 +13,7 @@ TIMEOUT = 5  # 5초 타임아웃
 MAX_RETRIES = 1  # 1회 재시도
 WHISPER_MODEL = "base"
 LANGUAGE = "ko"
+SESSION_VOLUME = 0.8  # Python 오디오 세션 볼륨 목표값 (0~1)
 
 # 전역 변수
 text_buffer = ""
@@ -25,6 +27,43 @@ stats = {
     'total_chars': 0
 }
 stats_lock = threading.Lock()
+
+
+def set_python_session_volume(level: float) -> None:
+    """Python 프로세스 오디오 세션 볼륨을 강제로 조정."""
+    target = max(0.0, min(1.0, level))
+
+    try:
+        sessions = AudioUtilities.GetAllSessions()
+    except Exception as exc:
+        print(f"[!] 오디오 세션 나열 실패: {exc}")
+        return
+
+    adjusted = 0
+    for session in sessions:
+        proc = session.Process
+        if not proc:
+            continue
+
+        try:
+            name = psutil.Process(proc.pid).name().lower()
+        except psutil.Error:
+            continue
+
+        if not name.startswith("python"):
+            continue
+
+        try:
+            simple_volume = session._ctl.QueryInterface(ISimpleAudioVolume)
+            simple_volume.SetMasterVolume(target, None)
+            adjusted += 1
+        except Exception as exc:
+            print(f"[!] 세션 볼륨 조정 실패(pid={proc.pid}): {exc}")
+
+    if adjusted:
+        print(f"[i] Python 세션 볼륨을 {int(target * 100)}%로 설정({adjusted}개 세션)")
+    else:
+        print("[i] 조정할 Python 오디오 세션이 없습니다 (이미 종료 또는 권한 문제)")
 
 
 def send_to_api(text):
