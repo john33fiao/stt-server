@@ -1,21 +1,23 @@
 import sys
 import time
 import threading
-import requests
+import socketio
 from RealtimeSTT import AudioToTextRecorder
 
 # 설정
-API_ENDPOINT = "http://localhost:5000/api/stt"
+SERVER_URL = "http://localhost:5000"
 SEND_INTERVAL = 5  # 5초마다 전송
-TIMEOUT = 5  # 5초 타임아웃
-MAX_RETRIES = 1  # 1회 재시도
 WHISPER_MODEL = "turbo"  # tiny, base, small, medium, large, turbo 중 선택 (turbo 추천: 빠르고 정확)
 LANGUAGE = "ko"
+
+# WebSocket 클라이언트 초기화
+sio = socketio.Client(reconnection=True, reconnection_attempts=5, reconnection_delay=1)
 
 # 전역 변수
 text_buffer = ""
 realtime_buffer = ""  # 실시간 중간 결과 저장
 buffer_lock = threading.Lock()
+is_connected = False
 
 # 통계
 stats = {
@@ -27,9 +29,58 @@ stats = {
 stats_lock = threading.Lock()
 
 
-def send_to_api(text):
-    """API로 텍스트 전송"""
+# WebSocket 이벤트 핸들러
+@sio.event
+def connect():
+    """서버 연결 성공"""
+    global is_connected
+    is_connected = True
+    print("[✓] WebSocket 서버 연결 성공!")
+
+
+@sio.event
+def disconnect():
+    """서버 연결 해제"""
+    global is_connected
+    is_connected = False
+    print("[!] WebSocket 서버 연결 해제")
+
+
+@sio.event
+def connect_error(data):
+    """연결 에러"""
+    print(f"[✗] WebSocket 연결 에러: {data}")
+
+
+@sio.on('stt_response')
+def on_stt_response(data):
+    """STT 전송 응답 처리"""
+    if data.get('status') == 'success':
+        message_id = data.get('message_id')
+        print(f"[✓] 전송 성공 (ID: {message_id})")
+    else:
+        error = data.get('error', 'Unknown error')
+        print(f"[✗] 전송 실패: {error}")
+
+
+@sio.on('connection_status')
+def on_connection_status(data):
+    """연결 상태 업데이트"""
+    clients = data.get('clients', 0)
+    print(f"[i] 현재 연결된 클라이언트: {clients}")
+
+
+def send_to_server(text):
+    """WebSocket으로 텍스트 전송"""
+    global is_connected
+
     if not text or text.strip() == "":
+        return False
+
+    if not is_connected:
+        print("[!] 서버에 연결되지 않음, 전송 실패")
+        with stats_lock:
+            stats['failed_sends'] += 1
         return False
 
     payload = {
@@ -37,61 +88,18 @@ def send_to_api(text):
         'timestamp': int(time.time())
     }
 
-    retries = 0
-    while retries <= MAX_RETRIES:
-        try:
-            response = requests.post(
-                API_ENDPOINT,
-                json=payload,
-                timeout=TIMEOUT
-            )
+    try:
+        sio.emit('stt_text', payload)
+        with stats_lock:
+            stats['successful_sends'] += 1
+            stats['total_chars'] += len(text)
+        return True
 
-            if response.status_code == 200:
-                # 전송 성공
-                with stats_lock:
-                    stats['successful_sends'] += 1
-                    stats['total_chars'] += len(text)
-
-                print(f"[✓] 전송 성공 (길이: {len(text)}자, ID: {response.json().get('message_id')})")
-                return True
-
-            elif 400 <= response.status_code < 500:
-                # 4xx 에러는 재시도하지 않음
-                print(f"[✗] 전송 실패 (클라이언트 에러 {response.status_code}): {response.text}")
-                with stats_lock:
-                    stats['failed_sends'] += 1
-                return False
-
-            else:
-                # 5xx 에러는 재시도
-                print(f"[!] 서버 에러 {response.status_code}, 재시도 중... ({retries + 1}/{MAX_RETRIES + 1})")
-                retries += 1
-                if retries <= MAX_RETRIES:
-                    time.sleep(1)
-
-        except requests.exceptions.Timeout:
-            print(f"[!] 타임아웃 발생, 재시도 중... ({retries + 1}/{MAX_RETRIES + 1})")
-            retries += 1
-            if retries <= MAX_RETRIES:
-                time.sleep(1)
-
-        except requests.exceptions.ConnectionError:
-            print(f"[!] 연결 실패, 재시도 중... ({retries + 1}/{MAX_RETRIES + 1})")
-            retries += 1
-            if retries <= MAX_RETRIES:
-                time.sleep(1)
-
-        except Exception as e:
-            print(f"[✗] 전송 중 예외 발생: {str(e)}")
-            with stats_lock:
-                stats['failed_sends'] += 1
-            return False
-
-    # 모든 재시도 실패
-    with stats_lock:
-        stats['failed_sends'] += 1
-    print(f"[✗] 전송 실패 (모든 재시도 실패)")
-    return False
+    except Exception as e:
+        print(f"[✗] 전송 중 예외 발생: {str(e)}")
+        with stats_lock:
+            stats['failed_sends'] += 1
+        return False
 
 
 def timer_thread():
@@ -123,7 +131,7 @@ def timer_thread():
                     stats['total_sends'] += 1
 
                 print(f"\n[→] 전송 시작: \"{text_to_send[:50]}...\"")
-                send_to_api(text_to_send)
+                send_to_server(text_to_send)
             else:
                 print("[i] 전송할 텍스트 없음, 대기 중...")
 
@@ -183,15 +191,19 @@ def stats_thread():
 def main():
     """메인 함수"""
     print("="*60)
-    print("STT 실시간 자막 클라이언트")
+    print("STT 실시간 자막 클라이언트 (WebSocket)")
     print("="*60)
-    print(f"API 엔드포인트: {API_ENDPOINT}")
+    print(f"서버 주소: {SERVER_URL}")
     print(f"전송 주기: {SEND_INTERVAL}초")
     print(f"Whisper 모델: {WHISPER_MODEL}")
     print(f"언어: {LANGUAGE}")
     print("="*60)
 
     try:
+        # WebSocket 연결
+        print("\n[i] WebSocket 서버 연결 중...")
+        sio.connect(SERVER_URL)
+
         # RealtimeSTT 레코더 초기화
         print("\n[i] RealtimeSTT 초기화 중...")
         print("[i] Whisper 모델 다운로드 중... (최초 실행 시 시간이 걸릴 수 있습니다)")
@@ -256,7 +268,14 @@ def main():
         with buffer_lock:
             if text_buffer.strip():
                 print(f"[i] 남은 텍스트 전송 중...")
-                send_to_api(text_buffer)
+                send_to_server(text_buffer)
+
+        # WebSocket 연결 종료
+        print("[i] WebSocket 연결 종료 중...")
+        try:
+            sio.disconnect()
+        except:
+            pass
 
         # 최종 통계 출력
         with stats_lock:

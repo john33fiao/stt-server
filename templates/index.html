@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>STT 실시간 자막</title>
+    <script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -170,6 +171,57 @@
         let isConnected = false;
         let messageCount = 0;
 
+        // WebSocket 연결
+        const socket = io();
+
+        // 연결 이벤트
+        socket.on('connect', function() {
+            console.log('WebSocket 연결됨');
+            updateStatus(true);
+            // 기존 메시지 요청
+            socket.emit('get_messages');
+        });
+
+        // 연결 해제 이벤트
+        socket.on('disconnect', function() {
+            console.log('WebSocket 연결 해제');
+            updateStatus(false, 'WebSocket 연결이 끊어졌습니다');
+        });
+
+        // 연결 에러 이벤트
+        socket.on('connect_error', function(error) {
+            console.error('WebSocket 연결 에러:', error);
+            updateStatus(false, `WebSocket 연결 에러: ${error.message}`);
+        });
+
+        // 새 메시지 수신
+        socket.on('new_message', function(message) {
+            console.log('새 메시지 수신:', message);
+            if (message.id > lastMessageId) {
+                addMessage(message);
+                lastMessageId = message.id;
+                updateStats();
+            }
+        });
+
+        // 기존 메시지 목록 수신
+        socket.on('messages_list', function(data) {
+            console.log('메시지 목록 수신:', data);
+            if (data.status === 'success' && data.messages) {
+                const newMessages = data.messages.filter(msg => msg.id > lastMessageId);
+                if (newMessages.length > 0) {
+                    newMessages.sort((a, b) => b.id - a.id);
+                    newMessages.forEach(msg => {
+                        addMessage(msg);
+                        if (msg.id > lastMessageId) {
+                            lastMessageId = msg.id;
+                        }
+                    });
+                    updateStats();
+                }
+            }
+        });
+
         // 타임스탬프 포맷팅
         function formatTimestamp(timestamp) {
             const date = new Date(timestamp * 1000);
@@ -231,7 +283,7 @@
 
             if (connected) {
                 statusDot.classList.add('connected');
-                statusText.textContent = '연결됨';
+                statusText.textContent = 'WebSocket 연결됨';
                 errorMessage.style.display = 'none';
             } else {
                 statusDot.classList.remove('connected');
@@ -249,52 +301,6 @@
             document.getElementById('totalMessages').textContent = messageCount;
             document.getElementById('lastUpdate').textContent = formatCurrentTime();
         }
-
-        // 메시지 가져오기
-        async function fetchMessages() {
-            try {
-                const response = await fetch('/api/messages');
-
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-
-                const data = await response.json();
-
-                // 연결 성공
-                updateStatus(true);
-
-                // 새 메시지만 추가 (중복 방지)
-                if (data.messages && data.messages.length > 0) {
-                    // 역순으로 정렬된 메시지를 받으므로 ID가 가장 큰 것이 첫 번째
-                    const newMessages = data.messages.filter(msg => msg.id > lastMessageId);
-
-                    if (newMessages.length > 0) {
-                        // ID 역순으로 정렬 (최신 메시지부터)
-                        newMessages.sort((a, b) => b.id - a.id);
-
-                        newMessages.forEach(msg => {
-                            addMessage(msg);
-                            if (msg.id > lastMessageId) {
-                                lastMessageId = msg.id;
-                            }
-                        });
-
-                        updateStats();
-                    }
-                }
-
-            } catch (error) {
-                console.error('Error fetching messages:', error);
-                updateStatus(false, `API 연결 실패: ${error.message}`);
-            }
-        }
-
-        // 1초마다 메시지 폴링
-        setInterval(fetchMessages, 1000);
-
-        // 초기 로드
-        fetchMessages();
     </script>
 </body>
 </html>
