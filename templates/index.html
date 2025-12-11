@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>STT 실시간 자막</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            color: #4CAF50;
+        }
+
+        .status-bar {
+            background-color: #2a2a2a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #ff4444;
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.connected {
+            background-color: #4CAF50;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            font-size: 14px;
+            color: #aaa;
+        }
+
+        .messages-container {
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            padding: 20px;
+            height: 600px;
+            overflow-y: auto;
+            scroll-behavior: smooth;
+        }
+
+        .message {
+            background-color: #3a3a3a;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border-left: 3px solid #4CAF50;
+        }
+
+        .message-text {
+            font-size: 16px;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
+        .message-timestamp {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .message-id {
+            font-size: 11px;
+            color: #666;
+            margin-left: 10px;
+        }
+
+        .no-messages {
+            text-align: center;
+            color: #666;
+            padding: 50px 0;
+            font-size: 18px;
+        }
+
+        /* 스크롤바 스타일링 */
+        .messages-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .messages-container::-webkit-scrollbar-track {
+            background: #1a1a1a;
+            border-radius: 4px;
+        }
+
+        .messages-container::-webkit-scrollbar-thumb {
+            background: #4CAF50;
+            border-radius: 4px;
+        }
+
+        .messages-container::-webkit-scrollbar-thumb:hover {
+            background: #45a049;
+        }
+
+        .error-message {
+            background-color: #ff4444;
+            color: white;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>STT 실시간 자막</h1>
+
+        <div class="status-bar">
+            <div class="status-indicator">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">연결 대기 중...</span>
+            </div>
+            <div class="stats">
+                <span>총 메시지: <strong id="totalMessages">0</strong></span>
+                <span>마지막 업데이트: <strong id="lastUpdate">-</strong></span>
+            </div>
+        </div>
+
+        <div class="error-message" id="errorMessage"></div>
+
+        <div class="messages-container" id="messagesContainer">
+            <div class="no-messages">메시지를 기다리는 중...</div>
+        </div>
+    </div>
+
+    <script>
+        let lastMessageId = 0;
+        let isConnected = false;
+        let messageCount = 0;
+
+        // 타임스탬프 포맷팅
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp * 1000);
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        }
+
+        // 현재 시간 포맷팅
+        function formatCurrentTime() {
+            const now = new Date();
+            const hours = String(now.getHours()).padStart(2, '0');
+            const minutes = String(now.getMinutes()).padStart(2, '0');
+            const seconds = String(now.getSeconds()).padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        }
+
+        // 메시지 DOM 추가
+        function addMessage(message) {
+            const container = document.getElementById('messagesContainer');
+
+            // "메시지를 기다리는 중..." 제거
+            const noMessages = container.querySelector('.no-messages');
+            if (noMessages) {
+                noMessages.remove();
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.innerHTML = `
+                <div class="message-text">${escapeHtml(message.text)}</div>
+                <div class="message-timestamp">
+                    ${formatTimestamp(message.timestamp)}
+                    <span class="message-id">#${message.id}</span>
+                </div>
+            `;
+
+            // 최근 메시지를 상단에 추가
+            container.insertBefore(messageDiv, container.firstChild);
+
+            messageCount++;
+        }
+
+        // HTML 이스케이프
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 상태 업데이트
+        function updateStatus(connected, errorMsg = null) {
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            const errorMessage = document.getElementById('errorMessage');
+
+            isConnected = connected;
+
+            if (connected) {
+                statusDot.classList.add('connected');
+                statusText.textContent = '연결됨';
+                errorMessage.style.display = 'none';
+            } else {
+                statusDot.classList.remove('connected');
+                statusText.textContent = '연결 끊김';
+
+                if (errorMsg) {
+                    errorMessage.textContent = errorMsg;
+                    errorMessage.style.display = 'block';
+                }
+            }
+        }
+
+        // 통계 업데이트
+        function updateStats() {
+            document.getElementById('totalMessages').textContent = messageCount;
+            document.getElementById('lastUpdate').textContent = formatCurrentTime();
+        }
+
+        // 메시지 가져오기
+        async function fetchMessages() {
+            try {
+                const response = await fetch('/api/messages');
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const data = await response.json();
+
+                // 연결 성공
+                updateStatus(true);
+
+                // 새 메시지만 추가 (중복 방지)
+                if (data.messages && data.messages.length > 0) {
+                    // 역순으로 정렬된 메시지를 받으므로 ID가 가장 큰 것이 첫 번째
+                    const newMessages = data.messages.filter(msg => msg.id > lastMessageId);
+
+                    if (newMessages.length > 0) {
+                        // ID 역순으로 정렬 (최신 메시지부터)
+                        newMessages.sort((a, b) => b.id - a.id);
+
+                        newMessages.forEach(msg => {
+                            addMessage(msg);
+                            if (msg.id > lastMessageId) {
+                                lastMessageId = msg.id;
+                            }
+                        });
+
+                        updateStats();
+                    }
+                }
+
+            } catch (error) {
+                console.error('Error fetching messages:', error);
+                updateStatus(false, `API 연결 실패: ${error.message}`);
+            }
+        }
+
+        // 1초마다 메시지 폴링
+        setInterval(fetchMessages, 1000);
+
+        // 초기 로드
+        fetchMessages();
+    </script>
+</body>
+</html>
