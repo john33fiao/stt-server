@@ -14,6 +14,7 @@ LANGUAGE = "ko"
 
 # 전역 변수
 text_buffer = ""
+realtime_buffer = ""  # 실시간 중간 결과 저장
 buffer_lock = threading.Lock()
 
 # 통계
@@ -94,18 +95,29 @@ def send_to_api(text):
 
 
 def timer_thread():
-    """10초마다 버퍼 내용을 전송하는 스레드"""
-    global text_buffer
+    """5초마다 버퍼 내용을 전송하는 스레드"""
+    global text_buffer, realtime_buffer
     print(f"[i] 타이머 스레드 시작 (전송 주기: {SEND_INTERVAL}초)")
 
     while True:
         time.sleep(SEND_INTERVAL)
 
         with buffer_lock:
+            # 실시간 버퍼와 확정 버퍼 합치기
+            combined_text = ""
             if text_buffer.strip():
-                text_to_send = text_buffer
+                combined_text = text_buffer.strip()
+            if realtime_buffer.strip():
+                if combined_text:
+                    combined_text += " " + realtime_buffer.strip()
+                else:
+                    combined_text = realtime_buffer.strip()
+            
+            if combined_text:
+                text_to_send = combined_text
                 # 버퍼 비우기 (전송 성공 여부와 관계없이)
                 text_buffer = ""
+                realtime_buffer = ""
 
                 with stats_lock:
                     stats['total_sends'] += 1
@@ -117,7 +129,16 @@ def timer_thread():
 
 
 def on_realtime_transcription_update(text):
-    """중간 결과 콜백 (실시간 표시)"""
+    """중간 결과 콜백 (실시간 표시 + 버퍼 적재)"""
+    global realtime_buffer
+    
+    if not text or text.strip() == "":
+        return
+    
+    # 실시간 버퍼에 최신 결과 저장 (덮어쓰기)
+    with buffer_lock:
+        realtime_buffer = text.strip()
+    
     # 한 줄 갱신
     sys.stdout.write(f"\r[실시간] {text}          ")
     sys.stdout.flush()
@@ -179,6 +200,11 @@ def main():
             model=WHISPER_MODEL,
             language=LANGUAGE,
             spinner=False,
+            silero_sensitivity=0.6,              # 음성 감지 민감도 높임
+            post_speech_silence_duration=0.3,    # 음성 종료 판단 시간 단축
+            min_length_of_recording=0.5,         # 최소 녹음 길이 단축
+            min_gap_between_recordings=0.1,      # 녹음 간 최소 간격 단축
+            enable_realtime_transcription=True,  # 실시간 변환 활성화
             on_realtime_transcription_update=on_realtime_transcription_update,
         )
 
@@ -199,11 +225,16 @@ def main():
         print("\n[i] 음성 인식 시작... (Ctrl+C로 종료)")
         print("[i] 마이크에 대고 말씀하세요.\n")
 
-        # 메인 루프 - recorder.text()를 호출하여 최종 인식 결과를 받아 처리
+        # 메인 루프 - 실시간 콜백이 버퍼에 적재, 타이머가 전송 담당
+        # recorder.text()는 백그라운드에서 확정 문장 처리용으로 유지
         while True:
-            final_text = recorder.text()
-            if final_text:
-                process_final_text(final_text)
+            try:
+                final_text = recorder.text()
+                if final_text:
+                    process_final_text(final_text)
+            except Exception as e:
+                # 실시간 전송이 메인이므로 에러 발생해도 계속 진행
+                time.sleep(0.1)
 
     except KeyboardInterrupt:
         print("\n\n[i] 종료 신호 수신...")
